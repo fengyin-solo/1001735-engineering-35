@@ -6,14 +6,27 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.seed import SEED_ROWS
+from app.seed_data import SEED_ROWS
 
 
 class Store:
     def __init__(self) -> None:
-        self._tables: dict[str, list[dict[str, Any]]] = {
+        self._tables: dict[str, list[dict[str, Any]]] = self._fresh_tables()
+
+    @staticmethod
+    def _fresh_tables() -> dict[str, list[dict[str, Any]]]:
+        """从标准基线构建一份全新的表数据（整表替换，不追加）。"""
+        return {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+
+    def reload_seed(self) -> dict[str, list[dict[str, Any]]]:
+        """重新初始化样例数据：整体替换而非追加，重复执行不会多出条目。
+
+        返回初始化后的数据快照（深拷贝），供命令行做条数与指纹校验。
+        """
+        self._tables = self._fresh_tables()
+        return {name: [dict(row) for row in rows] for name, rows in self._tables.items()}
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)

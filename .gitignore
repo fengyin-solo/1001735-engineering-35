@@ -85,3 +85,6 @@ desktop.ini
 *.db
 *.pid
 *.seed
+
+# 样例数据快照导出（本地核对用，不入库）
+backend/seed-snapshot.json

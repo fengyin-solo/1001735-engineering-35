@@ -24,11 +24,18 @@
 
 ## 启动
 
+完整的可复现步骤（依赖准备、容器构建、样例数据初始化、失败时缺什么）见
+**[docs/development-setup.md](docs/development-setup.md)**。要点：依赖版本以锁文件为准
+（后端 `backend/requirements.lock`、前端 `frontend/package-lock.json`），样例数据用
+`python -m app.seed init` 幂等初始化，本地与容器跑同一份基线数据。
+
 ### 后端
 
 ```bash
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock   # 精确版本，以锁文件为准
+.venv/bin/python -m app.seed init                       # 初始化样例数据（可重复执行）
 ./run.sh
 ```
 
@@ -38,12 +45,19 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ```bash
 cd frontend
-npm install
+npm ci          # 严格按 package-lock.json 安装
 npm run dev
 ```
 
 前端默认监听 `http://127.0.0.1:5173/`，dev server 不会自动打开浏览器，
 需要自己访问。`/api` 由 vite 代理到后端 `http://127.0.0.1:8000`。
+
+### 容器（与本地同结果）
+
+```bash
+docker compose build   # 后端镜像构建时会校验样例数据基线
+docker compose up
+```
 
 ## 业务模块
 

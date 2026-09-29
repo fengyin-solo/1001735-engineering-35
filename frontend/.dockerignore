@@ -1,0 +1,11 @@
+# 容器内会用 npm ci 按锁文件全新安装，本地 node_modules 与构建产物不要进镜像。
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+.eslintcache
+.DS_Store
+.git/
+.gitignore
+Dockerfile
+.dockerignore

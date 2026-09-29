@@ -1,0 +1,27 @@
+# 后端依赖锁文件 —— 本地与容器安装一律以此文件为准（pip install -r requirements.lock）。
+# 生成方式：用干净虚拟环境按 requirements.txt 的范围约束解析后冻结，
+#   python3 -m venv .venv-lock
+#   .venv-lock/bin/pip install -r requirements.txt
+#   .venv-lock/bin/pip freeze --all > requirements.lock
+# 升级流程：先改 requirements.txt，再重新执行上面的解析命令并提交本文件。
+# 解析环境：Python 3.11；锁内全部为纯 Python 或同时提供 manylinux/musllinux 轮的包，
+# 容器基础镜像 python:3.12-slim（linux/amd64、linux/arm64）可直接安装。
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+click==8.5.0
+fastapi==0.141.1
+h11==0.16.0
+httptools==0.8.0
+idna==3.20
+pydantic==2.13.5
+pydantic_core==2.46.5
+python-dotenv==1.2.3
+PyYAML==6.0.3
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
+uvloop==0.22.1
+watchfiles==1.3.0
+websockets==17.1

@@ -1,13 +1,26 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
     ports:
       - "8000:8000"
     environment:
       - APP_ENV=local
+    healthcheck:
+      # 与 Dockerfile 内一致：slim 无 curl，直接用标准库探活。
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; r=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)); sys.exit(0 if r.get('ok') else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
     ports:
       - "5173:5173"
+    environment:
+      # 容器之间走服务名访问后端；本地裸跑 vite 时仍是默认 http://127.0.0.1:8000。
+      - VITE_PROXY_TARGET=http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy

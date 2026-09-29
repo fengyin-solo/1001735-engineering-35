@@ -72,7 +72,6 @@ type Row = Record<string, string | number | null>
 const ENDPOINT = '/api/pressurepipe'
 const columns = ["管道编号", "管道名称", "管道级别", "公称直径", "输送介质", "敷设方式", "下次检验日", "管道状态"]
 const actions = ["办理投用", "安排检修", "停用管道"]
-const statuses = ["待投用", "在用运行", "隔离检修", "已停用"]
 const stats = [{"label": "在用管道", "value": 0}, {"label": "隔离检修", "value": 0}, {"label": "管道总长", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -86,8 +85,60 @@ function resetFilters() {
   void reload()
 }
 
-function exportRows() {
-  window.open(`${ENDPOINT}/export`, '_blank')
+// 列表与导出共用同一套查询参数，导出携带的范围与列表当前范围严格一致。
+function listQuery() {
+  // 页面筛选框只有前三列，其中后端只支持按管道编号过滤；
+  // 管道名称、管道级别后端没有对应条件，保持不参与查询的既有口径。
+  const params = new URLSearchParams()
+  const keyword = filters.value['管道编号']?.trim()
+  if (keyword) params.set('keyword', keyword)
+  return params.toString()
+}
+
+async function exportRows() {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/export?${listQuery()}`)
+    if (!response.ok) {
+      throw new Error('压力管道清单导出失败')
+    }
+    const payload = (await response.json()) as {
+      total?: number
+      items?: Row[]
+    }
+    const items = payload.items ?? []
+    const serverTotal = payload.total ?? items.length
+    // 服务端按当前过滤范围返回，条数对不上说明口径有偏差，不落盘并提示。
+    if (serverTotal !== total.value || items.length !== serverTotal) {
+      throw new Error(
+        `导出条数 ${items.length}（服务端合计 ${serverTotal}）与列表当前范围 ${total.value} 条不一致，请重新查询后再导出`,
+      )
+    }
+    saveExportFile(response, items, serverTotal)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '压力管道清单导出失败'
+  }
+}
+
+function saveExportFile(response: Response, items: Row[], total: number) {
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  const plain = /filename="?([^";]+)"?/i.exec(disposition)
+  const filename = star
+    ? decodeURIComponent(star[1])
+    : plain?.[1] ?? '压力管道清单.json'
+  const blob = new Blob([JSON.stringify(items, null, 2)], {
+    type: 'application/json;charset=utf-8',
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+  errorMessage.value = `已另存 ${filename}，共 ${total} 条，与列表当前范围一致`
 }
 
 function openCreate() {
@@ -112,7 +163,7 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = listQuery()
   try {
     const response = await request(`${ENDPOINT}?${query}`)
     if (!response.ok) {

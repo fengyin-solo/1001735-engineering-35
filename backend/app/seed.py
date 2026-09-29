@@ -1,655 +1,203 @@
-"""示例数据：每个模块给几条不同状态的记录，方便起服务后立刻看到内容。"""
+"""样例数据工具：初始化、幂等自检与快照导出。
+
+用途（在 backend/ 目录下执行）：
+
+    # 初始化/重置内存样例数据到标准基线；重复执行结果完全一致，不会多出条目
+    .venv/bin/python -m app.seed init
+
+    # 只校验当前内存仓库与标准基线是否一致（条数、内容、指纹），不改动数据
+    .venv/bin/python -m app.seed verify
+
+    # 把当前内存仓库逐模块导出成 JSON 快照，--expect <模块=条数> 可顺带核对条数
+    .venv/bin/python -m app.seed snapshot --out seed-snapshot.json --expect pressurepipe=3
+
+标准基线就是 seed_data 模块里的 SEED_ROWS：本地直接运行、容器构建后运行、反复初始化，
+看到的都是同一份数据。校验输出的指纹按 (模块、id、字段) 排序后做 SHA-256，
+与行顺序无关，两个环境指纹相同即数据完全一致。
+"""
 from __future__ import annotations
 
+import argparse
+import copy
+import hashlib
+import json
+import sys
 from typing import Any
 
-SEED_ROWS: dict[str, list[dict[str, Any]]] = {
-    "boiler": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '设备编号': 'BOIL-0001',
-  '设备名称': '锅炉设备样例1',
-  '额定蒸发量': '锅炉设备样例1',
-  '工作压力': '锅炉设备样例1',
-  '使用场所': '锅炉设备样例1',
-  '投用日期': '2026-09-01',
-  '下次检验日': '锅炉设备样例1',
-  '设备状态': '锅炉设备样例1'},
- {'id': 2,
-  'status': '在用运行',
-  'pending': True,
-  'abnormal': True,
-  '设备编号': 'BOIL-0002',
-  '设备名称': '锅炉设备样例2',
-  '额定蒸发量': '锅炉设备样例2',
-  '工作压力': '锅炉设备样例2',
-  '使用场所': '锅炉设备样例2',
-  '投用日期': '2026-09-02',
-  '下次检验日': '锅炉设备样例2',
-  '设备状态': '锅炉设备样例2'},
- {'id': 3,
-  'status': '停炉检修',
-  'pending': False,
-  'abnormal': False,
-  '设备编号': 'BOIL-0003',
-  '设备名称': '锅炉设备样例3',
-  '额定蒸发量': '锅炉设备样例3',
-  '工作压力': '锅炉设备样例3',
-  '使用场所': '锅炉设备样例3',
-  '投用日期': '2026-09-03',
-  '下次检验日': '锅炉设备样例3',
-  '设备状态': '锅炉设备样例3'}],
-    "vessel": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '容器编号': 'VESS-0001',
-  '容器名称': '压力容器样例1',
-  '设计压力': '压力容器样例1',
-  '容积规格': '压力容器样例1',
-  '介质类别': '压力容器样例1',
-  '使用场所': '压力容器样例1',
-  '下次检验日': '压力容器样例1',
-  '容器状态': '压力容器样例1'},
- {'id': 2,
-  'status': '在用运行',
-  'pending': True,
-  'abnormal': True,
-  '容器编号': 'VESS-0002',
-  '容器名称': '压力容器样例2',
-  '设计压力': '压力容器样例2',
-  '容积规格': '压力容器样例2',
-  '介质类别': '压力容器样例2',
-  '使用场所': '压力容器样例2',
-  '下次检验日': '压力容器样例2',
-  '容器状态': '压力容器样例2'},
- {'id': 3,
-  'status': '停用待检',
-  'pending': False,
-  'abnormal': False,
-  '容器编号': 'VESS-0003',
-  '容器名称': '压力容器样例3',
-  '设计压力': '压力容器样例3',
-  '容积规格': '压力容器样例3',
-  '介质类别': '压力容器样例3',
-  '使用场所': '压力容器样例3',
-  '下次检验日': '压力容器样例3',
-  '容器状态': '压力容器样例3'}],
-    "pressurepipe": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '管道编号': 'PRES-0001',
-  '管道名称': '压力管道样例1',
-  '管道级别': '压力管道样例1',
-  '公称直径': '压力管道样例1',
-  '输送介质': '压力管道样例1',
-  '敷设方式': '压力管道样例1',
-  '下次检验日': '压力管道样例1',
-  '管道状态': '压力管道样例1'},
- {'id': 2,
-  'status': '在用运行',
-  'pending': True,
-  'abnormal': True,
-  '管道编号': 'PRES-0002',
-  '管道名称': '压力管道样例2',
-  '管道级别': '压力管道样例2',
-  '公称直径': '压力管道样例2',
-  '输送介质': '压力管道样例2',
-  '敷设方式': '压力管道样例2',
-  '下次检验日': '压力管道样例2',
-  '管道状态': '压力管道样例2'},
- {'id': 3,
-  'status': '隔离检修',
-  'pending': False,
-  'abnormal': False,
-  '管道编号': 'PRES-0003',
-  '管道名称': '压力管道样例3',
-  '管道级别': '压力管道样例3',
-  '公称直径': '压力管道样例3',
-  '输送介质': '压力管道样例3',
-  '敷设方式': '压力管道样例3',
-  '下次检验日': '压力管道样例3',
-  '管道状态': '压力管道样例3'}],
-    "crane": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '机械编号': 'CRAN-0001',
-  '机械名称': '起重机械样例1',
-  '额定起重量': '起重机械样例1',
-  '跨度规格': '起重机械样例1',
-  '使用场所': '起重机械样例1',
-  '投用日期': '2026-09-01',
-  '下次检验日': '起重机械样例1',
-  '机械状态': '起重机械样例1'},
- {'id': 2,
-  'status': '在用运行',
-  'pending': True,
-  'abnormal': True,
-  '机械编号': 'CRAN-0002',
-  '机械名称': '起重机械样例2',
-  '额定起重量': '起重机械样例2',
-  '跨度规格': '起重机械样例2',
-  '使用场所': '起重机械样例2',
-  '投用日期': '2026-09-02',
-  '下次检验日': '起重机械样例2',
-  '机械状态': '起重机械样例2'},
- {'id': 3,
-  'status': '停机检修',
-  'pending': False,
-  'abnormal': False,
-  '机械编号': 'CRAN-0003',
-  '机械名称': '起重机械样例3',
-  '额定起重量': '起重机械样例3',
-  '跨度规格': '起重机械样例3',
-  '使用场所': '起重机械样例3',
-  '投用日期': '2026-09-03',
-  '下次检验日': '起重机械样例3',
-  '机械状态': '起重机械样例3'}],
-    "elevator": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '电梯编号': 'ELEV-0001',
-  '电梯名称': '电梯设备样例1',
-  '载重规格': '电梯设备样例1',
-  '层站数量': 10,
-  '使用场所': '电梯设备样例1',
-  '投用日期': '2026-09-01',
-  '下次检验日': '电梯设备样例1',
-  '电梯状态': '电梯设备样例1'},
- {'id': 2,
-  'status': '正常运行',
-  'pending': True,
-  'abnormal': True,
-  '电梯编号': 'ELEV-0002',
-  '电梯名称': '电梯设备样例2',
-  '载重规格': '电梯设备样例2',
-  '层站数量': 20,
-  '使用场所': '电梯设备样例2',
-  '投用日期': '2026-09-02',
-  '下次检验日': '电梯设备样例2',
-  '电梯状态': '电梯设备样例2'},
- {'id': 3,
-  'status': '停梯检修',
-  'pending': False,
-  'abnormal': False,
-  '电梯编号': 'ELEV-0003',
-  '电梯名称': '电梯设备样例3',
-  '载重规格': '电梯设备样例3',
-  '层站数量': 30,
-  '使用场所': '电梯设备样例3',
-  '投用日期': '2026-09-03',
-  '下次检验日': '电梯设备样例3',
-  '电梯状态': '电梯设备样例3'}],
-    "forklift": [{'id': 1,
-  'status': '待投用',
-  'pending': True,
-  'abnormal': False,
-  '车辆编号': 'FORK-0001',
-  '车辆名称': '场内机动车辆样例1',
-  '动力方式': '场内机动车辆样例1',
-  '额定载重': '场内机动车辆样例1',
-  '使用场所': '场内机动车辆样例1',
-  '投用日期': '2026-09-01',
-  '下次检验日': '场内机动车辆样例1',
-  '车辆状态': '场内机动车辆样例1'},
- {'id': 2,
-  'status': '在用运行',
-  'pending': True,
-  'abnormal': True,
-  '车辆编号': 'FORK-0002',
-  '车辆名称': '场内机动车辆样例2',
-  '动力方式': '场内机动车辆样例2',
-  '额定载重': '场内机动车辆样例2',
-  '使用场所': '场内机动车辆样例2',
-  '投用日期': '2026-09-02',
-  '下次检验日': '场内机动车辆样例2',
-  '车辆状态': '场内机动车辆样例2'},
- {'id': 3,
-  'status': '停用检修',
-  'pending': False,
-  'abnormal': False,
-  '车辆编号': 'FORK-0003',
-  '车辆名称': '场内机动车辆样例3',
-  '动力方式': '场内机动车辆样例3',
-  '额定载重': '场内机动车辆样例3',
-  '使用场所': '场内机动车辆样例3',
-  '投用日期': '2026-09-03',
-  '下次检验日': '场内机动车辆样例3',
-  '车辆状态': '场内机动车辆样例3'}],
-    "plan": [{'id': 1,
-  'status': '待编制',
-  'pending': True,
-  'abnormal': False,
-  '计划编号': 'PLAN-0001',
-  '点检对象': '点检计划样例1',
-  '点检周期': '点检计划样例1',
-  '点检项目': '点检计划样例1',
-  '计划工期': '点检计划样例1',
-  '编制人员': '点检计划样例1',
-  '审批人员': '点检计划样例1',
-  '计划状态': '点检计划样例1'},
- {'id': 2,
-  'status': '待审批',
-  'pending': True,
-  'abnormal': True,
-  '计划编号': 'PLAN-0002',
-  '点检对象': '点检计划样例2',
-  '点检周期': '点检计划样例2',
-  '点检项目': '点检计划样例2',
-  '计划工期': '点检计划样例2',
-  '编制人员': '点检计划样例2',
-  '审批人员': '点检计划样例2',
-  '计划状态': '点检计划样例2'},
- {'id': 3,
-  'status': '已批复',
-  'pending': False,
-  'abnormal': False,
-  '计划编号': 'PLAN-0003',
-  '点检对象': '点检计划样例3',
-  '点检周期': '点检计划样例3',
-  '点检项目': '点检计划样例3',
-  '计划工期': '点检计划样例3',
-  '编制人员': '点检计划样例3',
-  '审批人员': '点检计划样例3',
-  '计划状态': '点检计划样例3'}],
-    "spotcheck": [{'id': 1,
-  'status': '待点检',
-  'pending': True,
-  'abnormal': False,
-  '点检单号': 'SPOT-0001',
-  '关联计划': '点检记录样例1',
-  '点检设备': '点检记录样例1',
-  '点检人员': '点检记录样例1',
-  '点检日期': '2026-09-01',
-  '点检结论': '点检记录样例1',
-  '异常项数': '点检记录样例1',
-  '点检状态': '点检记录样例1'},
- {'id': 2,
-  'status': '点检中',
-  'pending': True,
-  'abnormal': True,
-  '点检单号': 'SPOT-0002',
-  '关联计划': '点检记录样例2',
-  '点检设备': '点检记录样例2',
-  '点检人员': '点检记录样例2',
-  '点检日期': '2026-09-02',
-  '点检结论': '点检记录样例2',
-  '异常项数': '点检记录样例2',
-  '点检状态': '点检记录样例2'},
- {'id': 3,
-  'status': '已提交',
-  'pending': False,
-  'abnormal': False,
-  '点检单号': 'SPOT-0003',
-  '关联计划': '点检记录样例3',
-  '点检设备': '点检记录样例3',
-  '点检人员': '点检记录样例3',
-  '点检日期': '2026-09-03',
-  '点检结论': '点检记录样例3',
-  '异常项数': '点检记录样例3',
-  '点检状态': '点检记录样例3'}],
-    "lubricate": [{'id': 1,
-  'status': '待保养',
-  'pending': True,
-  'abnormal': False,
-  '保养单号': 'LUBR-0001',
-  '保养设备': '润滑保养样例1',
-  '润滑点位': '润滑保养样例1',
-  '油品规格': '润滑保养样例1',
-  '加注用量': '润滑保养样例1',
-  '保养人员': '润滑保养样例1',
-  '保养日期': '2026-09-01',
-  '保养状态': '润滑保养样例1'},
- {'id': 2,
-  'status': '保养中',
-  'pending': True,
-  'abnormal': True,
-  '保养单号': 'LUBR-0002',
-  '保养设备': '润滑保养样例2',
-  '润滑点位': '润滑保养样例2',
-  '油品规格': '润滑保养样例2',
-  '加注用量': '润滑保养样例2',
-  '保养人员': '润滑保养样例2',
-  '保养日期': '2026-09-02',
-  '保养状态': '润滑保养样例2'},
- {'id': 3,
-  'status': '已完成',
-  'pending': False,
-  'abnormal': False,
-  '保养单号': 'LUBR-0003',
-  '保养设备': '润滑保养样例3',
-  '润滑点位': '润滑保养样例3',
-  '油品规格': '润滑保养样例3',
-  '加注用量': '润滑保养样例3',
-  '保养人员': '润滑保养样例3',
-  '保养日期': '2026-09-03',
-  '保养状态': '润滑保养样例3'}],
-    "inspect": [{'id': 1,
-  'status': '待报检',
-  'pending': True,
-  'abnormal': False,
-  '检验编号': 'INSP-0001',
-  '检验对象': '定期检验样例1',
-  '检验类别': '定期检验样例1',
-  '检验机构': '定期检验样例1',
-  '计划检验日': '定期检验样例1',
-  '检验人员': '定期检验样例1',
-  '检验日期': '2026-09-01',
-  '检验状态': '定期检验样例1'},
- {'id': 2,
-  'status': '检验中',
-  'pending': True,
-  'abnormal': True,
-  '检验编号': 'INSP-0002',
-  '检验对象': '定期检验样例2',
-  '检验类别': '定期检验样例2',
-  '检验机构': '定期检验样例2',
-  '计划检验日': '定期检验样例2',
-  '检验人员': '定期检验样例2',
-  '检验日期': '2026-09-02',
-  '检验状态': '定期检验样例2'},
- {'id': 3,
-  'status': '已出具',
-  'pending': False,
-  'abnormal': False,
-  '检验编号': 'INSP-0003',
-  '检验对象': '定期检验样例3',
-  '检验类别': '定期检验样例3',
-  '检验机构': '定期检验样例3',
-  '计划检验日': '定期检验样例3',
-  '检验人员': '定期检验样例3',
-  '检验日期': '2026-09-03',
-  '检验状态': '定期检验样例3'}],
-    "report": [{'id': 1,
-  'status': '待编制',
-  'pending': True,
-  'abnormal': False,
-  '报告编号': 'REPO-0001',
-  '关联检验': '检验报告样例1',
-  '报告类别': '检验报告样例1',
-  '检验结论': '检验报告样例1',
-  '下次检验日': '检验报告样例1',
-  '出具人员': '检验报告样例1',
-  '出具日期': '2026-09-01',
-  '报告状态': '检验报告样例1'},
- {'id': 2,
-  'status': '待审核',
-  'pending': True,
-  'abnormal': True,
-  '报告编号': 'REPO-0002',
-  '关联检验': '检验报告样例2',
-  '报告类别': '检验报告样例2',
-  '检验结论': '检验报告样例2',
-  '下次检验日': '检验报告样例2',
-  '出具人员': '检验报告样例2',
-  '出具日期': '2026-09-02',
-  '报告状态': '检验报告样例2'},
- {'id': 3,
-  'status': '已出具',
-  'pending': False,
-  'abnormal': False,
-  '报告编号': 'REPO-0003',
-  '关联检验': '检验报告样例3',
-  '报告类别': '检验报告样例3',
-  '检验结论': '检验报告样例3',
-  '下次检验日': '检验报告样例3',
-  '出具人员': '检验报告样例3',
-  '出具日期': '2026-09-03',
-  '报告状态': '检验报告样例3'}],
-    "hazard": [{'id': 1,
-  'status': '待定级',
-  'pending': True,
-  'abnormal': False,
-  '隐患编号': 'HAZA-0001',
-  '涉及设备': '隐患登记样例1',
-  '隐患类型': '隐患登记样例1',
-  '隐患描述': '隐患登记样例1',
-  '严重等级': '隐患登记样例1',
-  '发现日期': '2026-09-01',
-  '登记人员': '隐患登记样例1',
-  '隐患状态': '隐患登记样例1'},
- {'id': 2,
-  'status': '已定级',
-  'pending': True,
-  'abnormal': True,
-  '隐患编号': 'HAZA-0002',
-  '涉及设备': '隐患登记样例2',
-  '隐患类型': '隐患登记样例2',
-  '隐患描述': '隐患登记样例2',
-  '严重等级': '隐患登记样例2',
-  '发现日期': '2026-09-02',
-  '登记人员': '隐患登记样例2',
-  '隐患状态': '隐患登记样例2'},
- {'id': 3,
-  'status': '整改中',
-  'pending': False,
-  'abnormal': False,
-  '隐患编号': 'HAZA-0003',
-  '涉及设备': '隐患登记样例3',
-  '隐患类型': '隐患登记样例3',
-  '隐患描述': '隐患登记样例3',
-  '严重等级': '隐患登记样例3',
-  '发现日期': '2026-09-03',
-  '登记人员': '隐患登记样例3',
-  '隐患状态': '隐患登记样例3'}],
-    "rectify": [{'id': 1,
-  'status': '待下发',
-  'pending': True,
-  'abnormal': False,
-  '整改单号': 'RECT-0001',
-  '关联隐患': '整改闭环样例1',
-  '整改措施': '整改闭环样例1',
-  '责任单位': '整改闭环样例1',
-  '整改期限': '2026-09-01',
-  '完成日期': '2026-09-01',
-  '验收人员': '整改闭环样例1',
-  '整改状态': '整改闭环样例1'},
- {'id': 2,
-  'status': '整改中',
-  'pending': True,
-  'abnormal': True,
-  '整改单号': 'RECT-0002',
-  '关联隐患': '整改闭环样例2',
-  '整改措施': '整改闭环样例2',
-  '责任单位': '整改闭环样例2',
-  '整改期限': '2026-09-02',
-  '完成日期': '2026-09-02',
-  '验收人员': '整改闭环样例2',
-  '整改状态': '整改闭环样例2'},
- {'id': 3,
-  'status': '待验收',
-  'pending': False,
-  'abnormal': False,
-  '整改单号': 'RECT-0003',
-  '关联隐患': '整改闭环样例3',
-  '整改措施': '整改闭环样例3',
-  '责任单位': '整改闭环样例3',
-  '整改期限': '2026-09-03',
-  '完成日期': '2026-09-03',
-  '验收人员': '整改闭环样例3',
-  '整改状态': '整改闭环样例3'}],
-    "register": [{'id': 1,
-  'status': '待申报',
-  'pending': True,
-  'abnormal': False,
-  '登记编号': 'REGI-0001',
-  '登记设备': '使用登记样例1',
-  '使用单位': '使用登记样例1',
-  '登记类别': '使用登记样例1',
-  '登记日期': '2026-09-01',
-  '证件编号': 'REGI-0001',
-  '办理人员': '使用登记样例1',
-  '登记状态': '使用登记样例1'},
- {'id': 2,
-  'status': '申报中',
-  'pending': True,
-  'abnormal': True,
-  '登记编号': 'REGI-0002',
-  '登记设备': '使用登记样例2',
-  '使用单位': '使用登记样例2',
-  '登记类别': '使用登记样例2',
-  '登记日期': '2026-09-02',
-  '证件编号': 'REGI-0002',
-  '办理人员': '使用登记样例2',
-  '登记状态': '使用登记样例2'},
- {'id': 3,
-  'status': '已登记',
-  'pending': False,
-  'abnormal': False,
-  '登记编号': 'REGI-0003',
-  '登记设备': '使用登记样例3',
-  '使用单位': '使用登记样例3',
-  '登记类别': '使用登记样例3',
-  '登记日期': '2026-09-03',
-  '证件编号': 'REGI-0003',
-  '办理人员': '使用登记样例3',
-  '登记状态': '使用登记样例3'}],
-    "operator": [{'id': 1,
-  'status': '待取证',
-  'pending': True,
-  'abnormal': False,
-  '人员编号': 'OPER-0001',
-  '人员姓名': '作业人员样例1',
-  '所属单位': '作业人员样例1',
-  '作业项目': '作业人员样例1',
-  '证件编号': 'OPER-0001',
-  '有效期至': '作业人员样例1',
-  '复审日期': '2026-09-01',
-  '人员状态': '作业人员样例1'},
- {'id': 2,
-  'status': '在岗持证',
-  'pending': True,
-  'abnormal': True,
-  '人员编号': 'OPER-0002',
-  '人员姓名': '作业人员样例2',
-  '所属单位': '作业人员样例2',
-  '作业项目': '作业人员样例2',
-  '证件编号': 'OPER-0002',
-  '有效期至': '作业人员样例2',
-  '复审日期': '2026-09-02',
-  '人员状态': '作业人员样例2'},
- {'id': 3,
-  'status': '证件过期',
-  'pending': False,
-  'abnormal': False,
-  '人员编号': 'OPER-0003',
-  '人员姓名': '作业人员样例3',
-  '所属单位': '作业人员样例3',
-  '作业项目': '作业人员样例3',
-  '证件编号': 'OPER-0003',
-  '有效期至': '作业人员样例3',
-  '复审日期': '2026-09-03',
-  '人员状态': '作业人员样例3'}],
-    "spare": [{'id': 1,
-  'status': '正常可用',
-  'pending': True,
-  'abnormal': False,
-  '备件编号': 'SPAR-0001',
-  '备件名称': '备件器材样例1',
-  '适用设备': '备件器材样例1',
-  '结存数量': 10,
-  '计量单位': '备件器材样例1',
-  '存放库位': '备件器材样例1',
-  '保管人员': '备件器材样例1',
-  '备件状态': '备件器材样例1'},
- {'id': 2,
-  'status': '储备不足',
-  'pending': True,
-  'abnormal': True,
-  '备件编号': 'SPAR-0002',
-  '备件名称': '备件器材样例2',
-  '适用设备': '备件器材样例2',
-  '结存数量': 20,
-  '计量单位': '备件器材样例2',
-  '存放库位': '备件器材样例2',
-  '保管人员': '备件器材样例2',
-  '备件状态': '备件器材样例2'},
- {'id': 3,
-  'status': '已冻结',
-  'pending': False,
-  'abnormal': False,
-  '备件编号': 'SPAR-0003',
-  '备件名称': '备件器材样例3',
-  '适用设备': '备件器材样例3',
-  '结存数量': 30,
-  '计量单位': '备件器材样例3',
-  '存放库位': '备件器材样例3',
-  '保管人员': '备件器材样例3',
-  '备件状态': '备件器材样例3'}],
-    "contract": [{'id': 1,
-  'status': '待签订',
-  'pending': True,
-  'abnormal': False,
-  '合同编号': 'CONT-0001',
-  '服务单位': '维保合同样例1',
-  '维保设备': '维保合同样例1',
-  '合同金额': 12.5,
-  '服务期限': '2026-09-01',
-  '签订人员': '维保合同样例1',
-  '到期日期': '2026-09-01',
-  '合同状态': '维保合同样例1'},
- {'id': 2,
-  'status': '履行中',
-  'pending': True,
-  'abnormal': True,
-  '合同编号': 'CONT-0002',
-  '服务单位': '维保合同样例2',
-  '维保设备': '维保合同样例2',
-  '合同金额': 25.0,
-  '服务期限': '2026-09-02',
-  '签订人员': '维保合同样例2',
-  '到期日期': '2026-09-02',
-  '合同状态': '维保合同样例2'},
- {'id': 3,
-  'status': '已到期',
-  'pending': False,
-  'abnormal': False,
-  '合同编号': 'CONT-0003',
-  '服务单位': '维保合同样例3',
-  '维保设备': '维保合同样例3',
-  '合同金额': 37.5,
-  '服务期限': '2026-09-03',
-  '签订人员': '维保合同样例3',
-  '到期日期': '2026-09-03',
-  '合同状态': '维保合同样例3'}],
-    "settle": [{'id': 1,
-  'status': '待核算',
-  'pending': True,
-  'abnormal': False,
-  '结算单号': 'SETT-0001',
-  '关联合同': '费用结算样例1',
-  '费用类别': 12.5,
-  '应付金额': 12.5,
-  '已付金额': 12.5,
-  '审核人员': '费用结算样例1',
-  '付款日期': '2026-09-01',
-  '结算状态': '费用结算样例1'},
- {'id': 2,
-  'status': '待审核',
-  'pending': True,
-  'abnormal': True,
-  '结算单号': 'SETT-0002',
-  '关联合同': '费用结算样例2',
-  '费用类别': 25.0,
-  '应付金额': 25.0,
-  '已付金额': 25.0,
-  '审核人员': '费用结算样例2',
-  '付款日期': '2026-09-02',
-  '结算状态': '费用结算样例2'},
- {'id': 3,
-  'status': '已付款',
-  'pending': False,
-  'abnormal': False,
-  '结算单号': 'SETT-0003',
-  '关联合同': '费用结算样例3',
-  '费用类别': 37.5,
-  '应付金额': 37.5,
-  '已付金额': 37.5,
-  '审核人员': '费用结算样例3',
-  '付款日期': '2026-09-03',
-  '结算状态': '费用结算样例3'}]
-}
+from app.seed_data import SEED_ROWS
+
+
+def _canonical(rows_by_module: dict[str, list[dict[str, Any]]]) -> bytes:
+    """按模块名、记录 id、字段名排序后序列化，保证指纹只取决于数据内容。"""
+    ordered: dict[str, list[dict[str, Any]]] = {}
+    for module in sorted(rows_by_module):
+        rows = [dict(row) for row in rows_by_module[module]]
+        rows.sort(key=lambda row: int(row.get("id", 0)))
+        ordered[module] = [{key: row[key] for key in sorted(row)} for row in rows]
+    return json.dumps(ordered, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def fingerprint(rows_by_module: dict[str, list[dict[str, Any]]]) -> str:
+    """返回一份样例数据的 SHA-256 指纹，用来比对两个环境是否同一份结果。"""
+    return hashlib.sha256(_canonical(rows_by_module)).hexdigest()
+
+
+def baseline() -> dict[str, list[dict[str, Any]]]:
+    """返回标准基线数据的深拷贝，防止调用方改到模块级常量。"""
+    return copy.deepcopy(SEED_ROWS)
+
+
+def _diff(
+    actual: dict[str, list[dict[str, Any]]],
+    expected: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    """对比两份数据，返回可读的差异说明（缺模块、条数不符、内容不符）。"""
+    problems: list[str] = []
+    for module in sorted(set(actual) | set(expected)):
+        if module not in actual:
+            problems.append(f"模块 {module} 缺失")
+            continue
+        if module not in expected:
+            problems.append(f"模块 {module} 不在标准基线内（多出 {len(actual[module])} 条）")
+            continue
+        if len(actual[module]) != len(expected[module]):
+            problems.append(
+                f"模块 {module} 条数 {len(actual[module])} != 标准 {len(expected[module])}"
+            )
+            continue
+        if fingerprint({module: actual[module]}) != fingerprint({module: expected[module]}):
+            problems.append(f"模块 {module} 内容与标准基线不一致")
+    return problems
+
+
+def _load_store() -> Any:
+    # 延迟导入：命令行在导入阶段就需要用到 SEED_ROWS，但不应触发服务初始化。
+    from app.store import store
+
+    return store
+
+
+def cmd_init() -> int:
+    """把内存仓库重置为标准基线，并连做两次重置验证幂等性。"""
+    store = _load_store()
+    first = store.reload_seed()
+    first_sig = fingerprint(first)
+    second = store.reload_seed()  # 再初始化一次：幂等的关键自检
+    second_sig = fingerprint(second)
+    if second_sig != first_sig:
+        print("初始化失败：重复初始化后数据发生变化（指纹不一致）", file=sys.stderr)
+        return 1
+    total = sum(len(rows) for rows in second.values())
+    print(f"样例数据已初始化：{len(second)} 个模块，共 {total} 条记录")
+    print(f"数据指纹：{second_sig}")
+    print("幂等自检：连续初始化两次，条数与指纹一致，没有多出条目")
+    return 0
+
+
+def cmd_verify() -> int:
+    """校验当前内存仓库是否仍是标准基线；不是时逐条列出缺什么。"""
+    store = _load_store()
+    actual = {name: store.rows(name) for name in store.module_names()}
+    standard = baseline()
+    problems = _diff(actual, standard)
+    if problems:
+        print("样例数据校验未通过：", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            f"当前指纹 {fingerprint(actual)} != 标准指纹 {fingerprint(standard)}",
+            file=sys.stderr,
+        )
+        print("修复：执行 python -m app.seed init 重新初始化", file=sys.stderr)
+        return 1
+    total = sum(len(rows) for rows in actual.values())
+    print(f"样例数据校验通过：{len(actual)} 个模块，共 {total} 条记录")
+    print(f"数据指纹：{fingerprint(actual)}")
+    return 0
+
+
+def _parse_expect(pairs: list[str]) -> dict[str, int]:
+    expected: dict[str, int] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise argparse.ArgumentTypeError(
+                f"--expect 需要 模块=条数 形式，收到 {pair!r}"
+            )
+        module, raw = pair.split("=", 1)
+        module = module.strip()
+        if not module:
+            raise argparse.ArgumentTypeError(f"--expect 模块名为空：{pair!r}")
+        try:
+            expected[module] = int(raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"--expect 条数必须是整数，收到 {raw!r}"
+            ) from exc
+    return expected
+
+
+def cmd_snapshot(out: str, expect: list[str]) -> int:
+    """导出当前内存仓库快照；给出 --expect 时核对条数，不一致直接失败。"""
+    store = _load_store()
+    actual = {name: store.rows(name) for name in sorted(store.module_names())}
+    try:
+        expected_counts = _parse_expect(expect)
+    except (ValueError, argparse.ArgumentTypeError) as exc:
+        print(f"参数有误：{exc}", file=sys.stderr)
+        return 2
+    problems: list[str] = []
+    for module, wanted in expected_counts.items():
+        got = len(actual.get(module, []))
+        if got != wanted:
+            problems.append(f"模块 {module} 导出 {got} 条，期望 {wanted} 条")
+    if problems:
+        for problem in problems:
+            print(f"导出中止：{problem}", file=sys.stderr)
+        return 1
+    payload = {
+        "fingerprint": fingerprint(actual),
+        "counts": {name: len(rows) for name, rows in actual.items()},
+        "rows": actual,
+    }
+    with open(out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+    total = sum(len(rows) for rows in actual.values())
+    print(f"快照已写入 {out}：{len(actual)} 个模块，共 {total} 条记录")
+    print(f"数据指纹：{payload['fingerprint']}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.seed",
+        description="压力管道等特种设备示例数据的初始化、校验与快照工具",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("init", help="初始化/重置为标准基线，重复执行不产生重复条目")
+    sub.add_parser("verify", help="校验当前内存数据与标准基线是否一致")
+
+    snap = sub.add_parser("snapshot", help="把当前数据导出为 JSON 快照")
+    snap.add_argument("--out", default="seed-snapshot.json", help="快照输出路径")
+    snap.add_argument(
+        "--expect",
+        action="append",
+        default=[],
+        metavar="模块=条数",
+        help="核对某模块导出条数，可重复给出，例如 --expect pressurepipe=3",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "init":
+        return cmd_init()
+    if args.command == "verify":
+        return cmd_verify()
+    if args.command == "snapshot":
+        return cmd_snapshot(args.out, args.expect)
+    parser.error(f"未知命令：{args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

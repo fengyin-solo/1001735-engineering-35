@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.pressurepipe import PressurepipeService
@@ -28,6 +30,42 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# 注意：/export 必须在 /{entry_id} 之前注册，否则字面量 "export" 会被当成 entry_id，
+# 触发 int 校验失败返回 422。导出与列表走同一套筛选口径，只是不分页取全量。
+@router.get("/export")
+def export_entries(
+    keyword: str | None = Query(default=None, description="按管道编号检索，与列表一致"),
+    status: str | None = Query(default=None, description="待投用、在用运行、隔离检修、已停用，与列表一致"),
+) -> JSONResponse:
+    """导出当前过滤条件下的压力管道清单。
+
+    筛选参数、筛选逻辑与列表接口完全相同，size 取上限内的全量值；
+    因此返回的 total 与 items 条数一致，也与带同样条件的列表 total 相同，
+    即「另存出来的条数 = 列表当前范围」。
+    """
+    items, total = service.list_entries(keyword=keyword, status=status, page=1, size=200)
+    payload: dict[str, Any] = {
+        "module": "pressurepipe",
+        "keyword": keyword,
+        "status": status,
+        "total": total,
+        "items": items,
+    }
+    filename = "压力管道清单.json"
+    quoted = quote(filename)
+    return JSONResponse(
+        content=payload,
+        headers={
+            # ASCII fallback 用 filename，中文文件名放在 filename* 里。
+            "Content-Disposition": (
+                f"attachment; filename=pressurepipe-export.json; "
+                f"filename*=UTF-8''{quoted}"
+            ),
+            "X-Export-Total": str(total),
+        },
+    )
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +94,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出压力管道清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "pressurepipe", "total": total, "items": items}

@@ -1,0 +1,18 @@
+# 构建上下文里不要带本地环境、缓存和临时数据，避免污染镜像、拖慢构建。
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+seed-snapshot.json
+*.seed
+*.sqlite3
+*.db
+.DS_Store
+.git/
+.gitignore
+Dockerfile
+.dockerignore
