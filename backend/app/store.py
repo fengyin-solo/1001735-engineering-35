@@ -1,6 +1,7 @@
 """内存数据仓库：给每个业务模块准备一份可筛选、可流转的示例数据。
 
 真实项目里这里会换成数据库访问层；当前实现只依赖标准库，保证克隆下来就能起。
+样例数据的唯一来源是 app.seed.SEED_ROWS：初始化可以反复执行，结果都收敛回这份基准数据。
 """
 from __future__ import annotations
 
@@ -11,6 +12,14 @@ from app.seed import SEED_ROWS
 
 class Store:
     def __init__(self) -> None:
+        self.reset_to_seed()
+
+    def reset_to_seed(self) -> None:
+        """把所有模块重置为标准样例数据。
+
+        幂等：无论之前灌过多少次、改过多少条，执行后都回到同一份基准数据，
+        不会多出条目。初始化命令（app.seed_cli）用它做反复初始化自检。
+        """
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }

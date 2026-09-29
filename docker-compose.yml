@@ -1,13 +1,30 @@
+# 容器化本地环境：版本全部固定，照着做可复现。
+# 基础镜像补丁版本见 backend/Dockerfile、frontend/Dockerfile；
+# 应用依赖版本以后端 requirements.lock、前端 package-lock.json 为准。
 services:
   backend:
     build: ./backend
+    image: pressurepipe-backend:local
     ports:
       - "8000:8000"
     environment:
-      - APP_ENV=local
+      APP_ENV: local
+    healthcheck:
+      # 服务内自检：样例数据条数/指纹异常时容器直接判为不健康，说明是哪一步没过
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=5)); assert r['ok']"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   frontend:
     build: ./frontend
+    image: pressurepipe-frontend:local
     ports:
       - "5173:5173"
+    environment:
+      # 容器间 vite 代理走 compose 服务名；本地直跑时默认仍是 http://127.0.0.1:8000
+      VITE_PROXY_TARGET: http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy

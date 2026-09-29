@@ -1,0 +1,11 @@
+# 镜像里只保留运行所需内容，宿主机的 node_modules/dist 绝不混进构建上下文
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+.git/
+.gitignore
+*.log
+npm-debug.log*
+.DS_Store
+# 注意：.env.development 是 vite dev 默认加载的配置，必须随镜像保留

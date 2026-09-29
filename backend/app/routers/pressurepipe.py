@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.pressurepipe import PressurepipeService
@@ -28,6 +29,26 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# 注意：/export 必须声明在 /{entry_id} 之前，否则字面量 "export" 会被
+# 当成 entry_id 解析，直接返回 422，前端“导出”按钮拿到的是错误页。
+@router.get("/export")
+def export_entries(
+    keyword: str | None = Query(default=None, description="按管道编号检索，与列表筛选一致"),
+    status: str | None = Query(default=None, description="待投用、在用运行、隔离检修、已停用"),
+) -> JSONResponse:
+    """导出压力管道清单：按列表当前筛选条件（keyword/status）返回全量条目。
+
+    条数与列表 total 始终一致（不分页、不额外裁剪），保证“另存的文件条数=列表当前范围”。
+    以附件形式返回，浏览器直接触发另存。
+    """
+    items, total = service.list_entries(keyword=keyword, status=status, page=1, size=10000)
+    payload: dict[str, Any] = {"module": "pressurepipe", "total": total, "items": items}
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": 'attachment; filename="pressurepipe.json"'},
+    )
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +77,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出压力管道清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "pressurepipe", "total": total, "items": items}

@@ -86,8 +86,14 @@ function resetFilters() {
   void reload()
 }
 
+function buildQuery() {
+  return new URLSearchParams(filters.value as Record<string, string>).toString()
+}
+
 function exportRows() {
-  window.open(`${ENDPOINT}/export`, '_blank')
+  // 与列表 reload 用同一份查询条件，保证另存文件条数 = 列表当前范围
+  const query = buildQuery()
+  window.open(`${ENDPOINT}/export${query ? `?${query}` : ''}`, '_blank')
 }
 
 function openCreate() {
@@ -112,7 +118,7 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = buildQuery()
   try {
     const response = await request(`${ENDPOINT}?${query}`)
     if (!response.ok) {

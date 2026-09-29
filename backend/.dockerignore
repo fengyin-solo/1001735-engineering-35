@@ -1,0 +1,15 @@
+# 镜像里只保留运行所需内容，避免宿主机的虚拟环境/缓存/本地文件混进构建上下文
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.git/
+.gitignore
+.env
+.env.*
+*.log
+.DS_Store
